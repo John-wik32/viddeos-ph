@@ -3,113 +3,266 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Video Site</title>
-
+<title>Ultimate Video CMS - Pro</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gun/lib/radix.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gun/lib/radisk.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gun/lib/store.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gun/lib/rindexed.js"></script>
+<style>
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; }
+    ::-webkit-scrollbar-thumb { background: #6366f1; border-radius: 4px; }
+    .video-card video { width: 100%; height: 100%; object-fit: cover; }
+    .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
+    #status-dot.online { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    #status-dot.offline { background: #ef4444; }
+</style>
 </head>
-
-<body class="bg-slate-100">
-<div id="app"></div>
+<body class="bg-slate-50 text-slate-900 font-sans">
+<div id="app">
+    <div class="min-h-screen flex flex-col items-center justify-center">
+        <div class="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+        <p class="mt-4 text-slate-500 font-bold uppercase tracking-widest text-xs">Connecting to Global Mesh...</p>
+    </div>
+</div>
 
 <script>
-/* ---------- DATABASE ---------- */
+// --- DATABASE CONFIG ---
 const gun = Gun({
-  peers: ['https://gun-manhattan.herokuapp.com/gun']
+    peers: [
+        'https://gun-manhattan.herokuapp.com/gun',
+        'https://peer.wall.org/gun',
+        'https://p2p.dweb.link/gun',
+        'https://gun-us.herokuapp.com/gun'
+    ],
+    localStorage: false // DISABLE localStorage to stop the "QuotaExceeded" error forever
 });
-const videoDB = gun.get('netlify_video_links');
 
-/* ---------- STATE ---------- */
+const videoDB = gun.get('ultimate_cms_v6_videos');
+const categoryDB = gun.get('ultimate_cms_v6_cats');
+const presenceDB = gun.get('ultimate_cms_v6_presence');
+
 const State = {
-  view: 'public',
-  videos: [],
+    isAdmin: false,
+    currentView: 'public',
+    videos: [],
+    categories: [],
+    tags: [],
+    liveUsers: 1,
+    isConnected: false,
+    myId: Math.random().toString(36).substr(2, 9),
 
-  init() {
-    videoDB.map().on((data, id) => {
-      if (!data) {
-        this.videos = this.videos.filter(v => v.id !== id);
-      } else {
-        const v = { ...data, id };
-        const i = this.videos.findIndex(x => x.id === id);
-        i > -1 ? this.videos[i] = v : this.videos.push(v);
-      }
-      UI.render();
-    });
-  }
+    init() {
+        // Monitor Connection
+        gun.on('hi', () => { State.isConnected = true; UI.render(); });
+        gun.on('bye', () => { State.isConnected = false; UI.render(); });
+
+        // Sync Categories
+        categoryDB.map().on((name, id) => {
+            if (name) {
+                const idx = this.categories.findIndex(c => c.id === id);
+                if (idx > -1) this.categories[idx].name = name;
+                else this.categories.push({ id, name });
+            } else {
+                this.categories = this.categories.filter(c => c.id !== id);
+            }
+            UI.render();
+        });
+
+        // Sync Videos
+        videoDB.map().on((data, id) => {
+            if (data) {
+                const item = { ...data, id, tags: data.tags ? data.tags.split(',') : [] };
+                const i = this.videos.findIndex(v => v.id === id);
+                if (i > -1) this.videos[i] = item;
+                else this.videos.push(item);
+                this.updateTags();
+            } else {
+                this.videos = this.videos.filter(v => v.id !== id);
+            }
+            UI.render();
+        });
+
+        // Live Count
+        setInterval(() => presenceDB.get(this.myId).put(Date.now()), 5000);
+        presenceDB.map().on((t, id) => {
+            if (Date.now() - t > 15000) presenceDB.get(id).put(null);
+            this.updateCounter();
+        });
+    },
+
+    updateTags() {
+        const all = new Set();
+        this.videos.forEach(v => v.tags.forEach(t => t && all.add(t.trim())));
+        this.tags = Array.from(all);
+    },
+
+    updateCounter() {
+        presenceDB.once(data => {
+            if(data) {
+                const active = Object.values(data).filter(v => v && (Date.now() - v < 15000));
+                this.liveUsers = active.length || 1;
+                const el = document.getElementById('liveCounter');
+                if (el) el.innerText = this.liveUsers;
+            }
+        });
+    }
 };
 
-/* ---------- UI ---------- */
 const UI = {
-  render() {
-    document.getElementById('app').innerHTML =
-      State.view === 'admin' ? this.admin() : this.public();
-  },
+    render() {
+        const app = document.getElementById('app');
+        if (State.currentView === 'login') app.innerHTML = this.renderLogin();
+        else if (State.currentView === 'admin') app.innerHTML = this.renderAdmin();
+        else app.innerHTML = this.renderPublic();
+    },
 
-  public() {
-    return `
-    <nav class="bg-white p-4 flex justify-between shadow">
-      <h1 class="font-black text-indigo-600">VIDEO HUB</h1>
-      <button onclick="State.view='admin';UI.render()">Admin</button>
-    </nav>
+    renderLogin() {
+        return `
+        <div class="min-h-screen flex items-center justify-center p-6 bg-slate-200">
+            <div class="bg-white p-10 rounded-[2.5rem] shadow-2xl w-full max-w-sm">
+                <h2 class="text-3xl font-black mb-2 text-center">Admin</h2>
+                <input type="password" id="pw" class="w-full bg-slate-100 p-4 rounded-2xl mb-4 outline-none border-2 border-transparent focus:border-indigo-500" placeholder="Password">
+                <button onclick="UI.login()" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold">Access Site</button>
+            </div>
+        </div>`;
+    },
 
-    <main class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-      ${State.videos.length === 0 ? `
-        <p class="text-center col-span-full text-slate-500">
-          No videos yet
-        </p>` :
-        State.videos.map(v => `
-          <div class="bg-white p-4 rounded shadow">
-            <iframe
-              class="w-full aspect-video rounded"
-              src="${v.url}"
-              allowfullscreen>
-            </iframe>
-            <h3 class="font-bold mt-2">${v.title}</h3>
-          </div>
-        `).join('')
-      }
-    </main>`;
-  },
+    login() {
+        if(document.getElementById('pw').value === 'ilovegoon') {
+            State.isAdmin = true; State.currentView = 'admin'; UI.render();
+        } else alert('Wrong');
+    },
 
-  admin() {
-    return `
-    <div class="p-6 max-w-xl mx-auto">
-      <button onclick="State.view='public';UI.render()">← Back</button>
+    renderPublic() {
+        return `
+        <nav class="glass sticky top-0 z-50 px-6 py-4 border-b border-white">
+            <div class="max-w-7xl mx-auto flex justify-between items-center">
+                <div>
+                    <h1 class="text-2xl font-black text-indigo-600">MEDIA.STREAM</h1>
+                    <div class="flex items-center gap-2 mt-1">
+                        <div id="status-dot" class="w-2 h-2 rounded-full ${State.isConnected ? 'online' : 'offline'}"></div>
+                        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">${State.isConnected ? 'Global Sync Active' : 'Offline Mode'}</span>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div class="bg-rose-500 text-white px-3 py-1 rounded-full text-[10px] font-black">
+                        <span id="liveCounter">${State.liveUsers}</span> LIVE
+                    </div>
+                    <button onclick="State.currentView='login';UI.render()" class="text-slate-400"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg></button>
+                </div>
+            </div>
+        </nav>
+        <main class="max-w-7xl mx-auto p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            ${State.videos.sort((a,b)=>b.time-a.time).map(v => this.renderCard(v)).join('')}
+        </main>`;
+    },
 
-      <div class="bg-white p-6 mt-4 rounded shadow">
-        <h2 class="font-bold mb-4">Add Video</h2>
+    renderAdmin() {
+        return `
+        <div class="min-h-screen bg-slate-100 p-6">
+            <div class="max-w-4xl mx-auto">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-3xl font-black">Dashboard</h2>
+                    <button onclick="State.currentView='public';UI.render()" class="bg-white px-6 py-2 rounded-full font-bold">Exit</button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="bg-white p-8 rounded-[2rem] shadow-sm">
+                        <h3 class="font-bold mb-6 text-indigo-600 uppercase text-xs tracking-widest">Add New MP4 Link</h3>
+                        <div class="space-y-4">
+                            <input id="vTitle" placeholder="Video Title" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
+                            <input id="vUrl" placeholder="MP4 URL (Direct Link)" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
+                            <input id="vTags" placeholder="Tags (comma separated)" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
+                            <select id="vCat" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
+                                <option value="">Select Category</option>
+                                ${State.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
+                            </select>
+                            <button onclick="UI.publish()" class="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold shadow-xl shadow-indigo-100">Broadcast to Everyone</button>
+                        </div>
+                    </div>
+                    <div class="space-y-6">
+                        <div class="bg-white p-6 rounded-[2rem]">
+                            <h3 class="font-bold mb-4 text-xs uppercase tracking-widest">Categories</h3>
+                            <div class="flex gap-2 mb-4">
+                                <input id="nCat" class="flex-1 bg-slate-50 p-2 rounded-lg outline-none" placeholder="New Cat...">
+                                <button onclick="UI.addCat()" class="bg-indigo-600 text-white px-4 rounded-lg">+</button>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                ${State.categories.map(c=>`<span class="bg-slate-100 px-3 py-1 rounded-full text-[10px] font-bold">${c.name} <button onclick="UI.delCat('${c.id}')" class="text-rose-500 ml-1">✕</button></span>`).join('')}
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-[2rem] max-h-60 overflow-y-auto">
+                            <h3 class="font-bold mb-4 text-xs uppercase tracking-widest">Manage Videos</h3>
+                            ${State.videos.map(v=>`
+                                <div class="flex justify-between py-2 border-b text-sm">
+                                    <span class="truncate w-32 font-medium">${v.title}</span>
+                                    <button onclick="UI.delVid('${v.id}')" class="text-rose-500 font-bold">DELETE</button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    },
 
-        <input id="title" placeholder="Title"
-          class="w-full p-2 mb-2 bg-slate-100 rounded">
+    renderCard(v) {
+        return `
+        <div onclick="UI.play('${v.id}')" class="group cursor-pointer">
+            <div class="aspect-video bg-slate-900 rounded-[2rem] overflow-hidden relative shadow-xl transition-transform group-hover:scale-[1.02]">
+                <video src="${v.url}" muted class="w-full h-full object-cover"></video>
+                <div class="absolute inset-0 bg-indigo-900/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div class="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-2xl">
+                        <svg class="w-8 h-8 text-indigo-600 ml-1" fill="currentColor" viewBox="0 0 20 20"><path d="M4.5 3.5l11 6.5-11 6.5V3.5z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4 px-2">
+                <h3 class="font-bold text-lg leading-tight truncate">${v.title}</h3>
+                <div class="flex gap-2 mt-2">
+                    ${v.tags.map(t=>`<span class="text-[10px] font-bold text-slate-400">#${t.trim()}</span>`).join('')}
+                </div>
+            </div>
+        </div>`;
+    },
 
-        <input id="url" placeholder="YouTube Embed URL"
-          class="w-full p-2 mb-4 bg-slate-100 rounded">
+    publish() {
+        const title = document.getElementById('vTitle').value;
+        const url = document.getElementById('vUrl').value;
+        if(!title || !url) return alert("Title and URL required");
+        
+        videoDB.get(Math.random().toString(36).substr(2, 9)).put({
+            title, url, 
+            category: document.getElementById('vCat').value,
+            tags: document.getElementById('vTags').value,
+            time: Date.now()
+        });
+        alert("Published!");
+        UI.render();
+    },
 
-        <button onclick="UI.addVideo()"
-          class="bg-indigo-600 text-white px-4 py-2 rounded">
-          Add Video
-        </button>
-      </div>
-    </div>`;
-  },
+    addCat() {
+        const n = document.getElementById('nCat').value;
+        if(n) categoryDB.get(Math.random().toString(36).substr(2, 9)).put(n);
+        document.getElementById('nCat').value = '';
+    },
 
-  addVideo() {
-    const title = document.getElementById('title').value;
-    let url = document.getElementById('url').value;
+    delCat(id) { if(confirm("Del?")) categoryDB.get(id).put(null); },
+    delVid(id) { if(confirm("Del?")) videoDB.get(id).put(null); },
 
-    if (!title || !url) return alert("Missing info");
-
-    // Convert normal YouTube link → embed
-    if (url.includes("watch?v=")) {
-      url = url.replace("watch?v=", "embed/");
+    play(id) {
+        const v = State.videos.find(x=>x.id===id);
+        const m = document.createElement('div');
+        m.className = 'fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4';
+        m.onclick = (e) => { if(e.target === m) m.remove(); };
+        m.innerHTML = `<div class="w-full max-w-5xl relative">
+            <video src="${v.url}" controls autoplay class="w-full rounded-3xl shadow-2xl"></video>
+            <div class="mt-4 text-white font-bold text-2xl">${v.title}</div>
+        </div>`;
+        document.body.appendChild(m);
     }
-
-    videoDB.get(Math.random().toString(36).slice(2)).put({
-      title,
-      url,
-      time: Date.now()
-    });
-  }
 };
 
 State.init();
