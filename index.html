@@ -11,47 +11,90 @@
     ::-webkit-scrollbar-track { background: #f1f1f1; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    
+    @keyframes pulse-live {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    .animate-pulse-live {
+        animation: pulse-live 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
 </style>
 </head>
 <body class="bg-gray-50 text-gray-800">
 <div id="app"></div>
 
 <script>
-// --- Data & State Management ---
+// --- IndexedDB Helper (Solves the Storage Limit Issue) ---
+const DB_CONFIG = {
+    name: 'VideoLibraryUltimateDB',
+    version: 1,
+    storeName: 'appData'
+};
 
-const DataManager = {
-    // Wrapper to support both Window.storage (if available) and LocalStorage fallback
+const IDB = {
+    async getDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_CONFIG.name, DB_CONFIG.version);
+            
+            request.onerror = () => reject('Error opening database');
+            
+            request.onsuccess = (event) => resolve(event.target.result);
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(DB_CONFIG.storeName)) {
+                    db.createObjectStore(DB_CONFIG.storeName);
+                }
+            };
+        });
+    },
+
     async get(key) {
         try {
-            if (window.storage) {
-                const result = await window.storage.get(key);
-                return result ? JSON.parse(result.value) : null;
-            } else {
-                const item = localStorage.getItem(key);
-                return item ? JSON.parse(item) : null;
-            }
-        } catch (error) {
-            console.error('Storage Get Error:', error);
+            const db = await this.getDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([DB_CONFIG.storeName], 'readonly');
+                const store = transaction.objectStore(DB_CONFIG.storeName);
+                const request = store.get(key);
+                
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        } catch (e) {
+            console.error("IDB Get Error:", e);
             return null;
         }
     },
-    
+
     async set(key, value) {
         try {
-            const stringVal = JSON.stringify(value);
-            if (window.storage) {
-                await window.storage.set(key, stringVal);
-            } else {
-                localStorage.setItem(key, stringVal);
-            }
-            return true;
-        } catch (error) {
-            if (error.name === 'QuotaExceededError') {
-                alert('Storage limit reached! Video/Image might be too large for this browser.');
-            }
-            console.error('Storage Set Error:', error);
+            const db = await this.getDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([DB_CONFIG.storeName], 'readwrite');
+                const store = transaction.objectStore(DB_CONFIG.storeName);
+                const request = store.put(value, key);
+                
+                request.onsuccess = () => resolve(true);
+                request.onerror = () => reject(request.error);
+            });
+        } catch (e) {
+            console.error("IDB Set Error:", e);
+            alert("Database Error: Could not save data. Your disk might be full.");
             return false;
         }
+    }
+};
+
+// --- Data & State Management ---
+
+const DataManager = {
+    async get(key) {
+        return await IDB.get(key);
+    },
+    
+    async set(key, value) {
+        return await IDB.set(key, value);
     },
     
     async initialize() {
@@ -87,6 +130,7 @@ const State = {
     selectedCategory: 'all',
     selectedTag: 'all',
     sortBy: 'newest',
+    liveUsers: 12, // Initial fake count
     
     async load() {
         this.videos = await DataManager.get('videos') || [];
@@ -94,6 +138,17 @@ const State = {
         this.tags = await DataManager.get('tags') || [];
         this.siteSettings = await DataManager.get('site-settings') || {title: 'Video Library', subtitle: 'Explore our collection', featuredCount: 3};
         this.updateAllTags();
+        this.startLiveCounter();
+    },
+
+    startLiveCounter() {
+        // Simulates live users since this is a static file
+        setInterval(() => {
+            const change = Math.floor(Math.random() * 5) - 2; // -2 to +2 change
+            this.liveUsers = Math.max(5, this.liveUsers + change);
+            const counterEl = document.getElementById('liveCounter');
+            if(counterEl) counterEl.innerText = this.liveUsers;
+        }, 4000);
     },
     
     updateAllTags() {
@@ -247,16 +302,12 @@ const FileHandler = {
             alert('Please select a video file');
             return null;
         }
-        // Limit set to 30MB to give some buffer for LocalStorage, though >5MB often fails in standard LS.
-        if (file.size > 30 * 1024 * 1024) {
-            alert('Video file too large. Max 30MB. Consider using a URL instead.');
-            return null;
-        }
+        // LIMIT REMOVED: We now rely on IndexedDB which can handle GBs of data
         try {
             const base64 = await this.fileToBase64(file);
             return base64;
         } catch (error) {
-            alert('Error processing video');
+            alert('Error processing video. File might be corrupt.');
             return null;
         }
     },
@@ -264,10 +315,6 @@ const FileHandler = {
     async handleImageUpload(file) {
         if (!file.type.startsWith('image/')) {
             alert('Please select an image file');
-            return null;
-        }
-        if (file.size > 5 * 1024 * 1024) {
-            alert('Image too large. Max 5MB.');
             return null;
         }
         try {
@@ -328,6 +375,15 @@ const UI = {
                         <h1 class="text-2xl md:text-3xl font-bold text-gray-900">${State.siteSettings.title}</h1>
                         <p class="text-gray-600 text-sm md:text-base">${State.siteSettings.subtitle}</p>
                     </div>
+                    
+                    <div class="flex items-center gap-2 bg-red-50 text-red-600 px-3 py-1 rounded-full border border-red-100">
+                        <span class="relative flex h-3 w-3">
+                          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                          <span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                        </span>
+                        <span class="text-sm font-bold"><span id="liveCounter">${State.liveUsers}</span> Live Viewers</span>
+                    </div>
+
                     <div class="flex gap-2 w-full md:w-auto">
                          <input type="text" id="searchInput" class="w-full md:w-64 border rounded-lg px-4 py-2" placeholder="Search videos..." value="${State.searchTerm}">
                         <button id="adminLoginBtn" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-black text-sm font-medium whitespace-nowrap">Admin</button>
@@ -594,9 +650,10 @@ const UI = {
                             <div class="h-px bg-gray-300 flex-1"></div>
                         </div>
                         <div>
-                            <label class="block text-xs text-gray-600 mb-1">Upload Video File (Max 30MB)</label>
+                            <label class="block text-xs text-gray-600 mb-1">Upload Video File (No Limit)</label>
                             <input type="file" id="vFile" accept="video/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200">
-                            <p id="videoUploadStatus" class="text-xs text-green-600 mt-1 font-bold hidden">✓ Video file selected & processed</p>
+                            <p id="videoLoading" class="text-xs text-orange-500 mt-1 font-bold hidden">⏳ Processing large video file, please wait...</p>
+                            <p id="videoUploadStatus" class="text-xs text-green-600 mt-1 font-bold hidden">✓ Video ready to save</p>
                         </div>
                     </div>
                 </div>
@@ -608,7 +665,7 @@ const UI = {
                             <label class="block text-xs text-gray-500 mb-1">Image URL</label>
                             <input type="url" id="vThumb" value="${video && !video.thumbnail?.startsWith('data:') ? video.thumbnail || '' : ''}" class="w-full border rounded px-3 py-2" placeholder="https://...">
                             <div class="text-center text-xs text-gray-400 my-2">- OR -</div>
-                            <label class="block text-xs text-gray-500 mb-1">Upload Image (Max 5MB)</label>
+                            <label class="block text-xs text-gray-500 mb-1">Upload Image</label>
                             <input type="file" id="vThumbFile" accept="image/*" class="w-full text-xs">
                         </div>
                         <div class="w-24 h-24 bg-gray-200 rounded flex items-center justify-center overflow-hidden border">
@@ -644,7 +701,7 @@ const UI = {
                 </div>
 
                 <div class="flex gap-3 pt-4 border-t">
-                    <button type="submit" class="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 font-bold shadow-lg shadow-blue-200 transition-all">💾 Save Video</button>
+                    <button type="submit" id="saveVideoBtn" class="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 font-bold shadow-lg shadow-blue-200 transition-all">💾 Save Video</button>
                     <button type="button" onclick="UI.closeModal()" class="flex-1 bg-gray-100 text-gray-700 px-4 py-3 rounded-lg hover:bg-gray-200 font-medium transition-all">Cancel</button>
                 </div>
             </form>
@@ -663,15 +720,28 @@ const UI = {
                 urlInput.placeholder = "File selected. Clear file to use URL.";
                 urlInput.disabled = true;
                 
-                const result = await FileHandler.handleVideoUpload(file);
-                if (result) {
-                    this.uploadedVideoData = result;
-                    document.getElementById('videoUploadStatus').classList.remove('hidden');
-                } else {
-                    e.target.value = ''; // Reset on failure
-                    urlInput.disabled = false;
-                    urlInput.placeholder = "https://youtube.com/watch?v=...";
-                }
+                document.getElementById('videoLoading').classList.remove('hidden');
+                document.getElementById('videoUploadStatus').classList.add('hidden');
+                document.getElementById('saveVideoBtn').disabled = true;
+                document.getElementById('saveVideoBtn').innerText = "Processing...";
+
+                // Delay slightly to allow UI to update before heavy processing
+                setTimeout(async () => {
+                    const result = await FileHandler.handleVideoUpload(file);
+                    
+                    if (result) {
+                        this.uploadedVideoData = result;
+                        document.getElementById('videoUploadStatus').classList.remove('hidden');
+                    } else {
+                        e.target.value = ''; // Reset on failure
+                        urlInput.disabled = false;
+                        urlInput.placeholder = "https://youtube.com/watch?v=...";
+                    }
+                    
+                    document.getElementById('videoLoading').classList.add('hidden');
+                    document.getElementById('saveVideoBtn').disabled = false;
+                    document.getElementById('saveVideoBtn').innerText = "💾 Save Video";
+                }, 100);
             }
         };
         
@@ -711,6 +781,10 @@ const UI = {
                 thumbnail = this.uploadedThumbnailData;
             }
             
+            const btn = document.getElementById('saveVideoBtn');
+            btn.innerText = "Saving to Database...";
+            btn.disabled = true;
+
             const data = {
                 title: document.getElementById('vTitle').value,
                 description: document.getElementById('vDesc').value,
@@ -722,9 +796,9 @@ const UI = {
             };
             
             if (video) {
-                State.updateVideo(video.id, data);
+                await State.updateVideo(video.id, data);
             } else {
-                State.addVideo(data);
+                await State.addVideo(data);
             }
             
             UI.closeModal();
