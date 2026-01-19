@@ -309,7 +309,7 @@ const UI = {
                     <div>
                         <label class="block text-sm font-medium mb-1">Password</label>
                         <input type="password" id="adminPassword" class="w-full border rounded px-3 py-2" placeholder="Enter password" required>
-                        <p class="text-xs text-gray-500 mt-1">Default: admin123</p>
+                        <p class="text-xs text-gray-500 mt-1">Default: </p>
                     </div>
                     <button type="submit" class="w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 font-medium">Login</button>
                     <button type="button" id="backToPublic" class="w-full bg-gray-200 px-4 py-2 rounded hover:bg-gray-300 font-medium">Back to Site</button>
@@ -919,7 +919,7 @@ const UI = {
     attachLoginListeners() {
         document.getElementById('loginForm').onsubmit = e => {
             e.preventDefault();
-            if (document.getElementById('adminPassword').value === 'admin123') {
+            if (document.getElementById('adminPassword').value === 'ilovegoon') {
                 State.isAdmin = true;
                 State.currentView = 'admin';
                 UI.render();
