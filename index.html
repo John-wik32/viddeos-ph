@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Global Video CMS - Pro Edition</title>
+<title>Global Video CMS - Pro</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gun/lib/radix.js"></script>
@@ -11,49 +11,48 @@
 <script src="https://cdn.jsdelivr.net/npm/gun/lib/store.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gun/lib/rindexed.js"></script>
 <style>
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 10px; }
-    .video-card video { width: 100%; height: 100%; object-fit: cover; border-radius: 1rem; }
-    .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
+    .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); }
+    .video-card { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+    .video-card:hover { transform: translateY(-5px); }
+    #status-dot.online { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    #status-dot.offline { background: #ef4444; }
 </style>
 </head>
-<body class="bg-slate-50 text-slate-900 font-sans">
-<div id="app">
-    <div class="min-h-screen flex items-center justify-center">
-        <div class="text-center">
-            <div class="inline-block w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-            <p class="mt-4 font-bold text-slate-500 uppercase tracking-widest text-xs">Establishing Global Connection...</p>
-        </div>
-    </div>
-</div>
+<body class="bg-gray-100 text-gray-900 font-sans">
+<div id="app"></div>
 
 <script>
-// --- GLOBAL SYNC CONFIG (FIXED PEERS) ---
-// I am using a larger list of peers to ensure "Everyone Sees It"
+// --- DATABASE INITIALIZATION ---
+// We use IndexedDB for "Unlimited" storage and a robust peer list
 const gun = Gun({
     peers: [
         'https://gun-manhattan.herokuapp.com/gun',
-        'https://peer.wall.org/gun',
+        'https://p2p.dweb.link/gun',
         'https://gun-us.herokuapp.com/gun',
-        'https://gun-eu.herokuapp.com/gun',
-        'https://p2p.dweb.link/gun'
+        'https://peer.wall.org/gun',
+        'https://gun-ams1.marda.no/gun'
     ],
-    localStorage: false // DISABLE localStorage to stop the "QuotaExceeded" error
+    localStorage: false // Explicitly disable localStorage to avoid Quota Errors
 });
 
-const videoDB = gun.get('netlify_pro_v10_videos');
-const catDB = gun.get('netlify_pro_v10_cats');
-const userCountDB = gun.get('netlify_pro_v10_presence');
+const videoDB = gun.get('global_cms_v20_videos');
+const catDB = gun.get('global_cms_v20_cats');
+const presenceDB = gun.get('global_cms_v20_presence');
 
 const State = {
     isAdmin: false,
     currentView: 'public',
     videos: [],
     categories: [],
+    isConnected: false,
     liveCount: 1,
     myId: Math.random().toString(36).substr(2, 9),
 
-    async init() {
+    init() {
+        // Monitor Connection
+        gun.on('hi', () => { State.isConnected = true; UI.render(); });
+        gun.on('bye', () => { State.isConnected = false; UI.render(); });
+
         // Sync Categories
         catDB.map().on((name, id) => {
             if (name) {
@@ -79,18 +78,18 @@ const State = {
             UI.render();
         });
 
-        // Global Live Count (Presence)
-        setInterval(() => userCountDB.get(this.myId).put(Date.now()), 3000);
-        userCountDB.map().on((t, id) => {
-            if (Date.now() - t > 10000) userCountDB.get(id).put(null);
+        // Presence Logic
+        setInterval(() => presenceDB.get(this.myId).put(Date.now()), 4000);
+        presenceDB.map().on((t, id) => {
+            if (Date.now() - t > 12000) presenceDB.get(id).put(null);
             this.updateCounter();
         });
     },
 
     updateCounter() {
-        userCountDB.once(data => {
+        presenceDB.once(data => {
             if(data) {
-                const active = Object.values(data).filter(v => v && (Date.now() - v < 10000));
+                const active = Object.values(data).filter(v => v && (Date.now() - v < 12000));
                 this.liveCount = active.length || 1;
                 const el = document.getElementById('liveCounter');
                 if (el) el.innerText = this.liveCount;
@@ -109,41 +108,46 @@ const UI = {
 
     renderLogin() {
         return `
-        <div class="min-h-screen flex items-center justify-center p-6 bg-slate-200">
-            <div class="bg-white p-10 rounded-[2.5rem] shadow-2xl w-full max-w-sm">
-                <h2 class="text-3xl font-black mb-2 text-center">Admin</h2>
-                <p class="text-slate-400 text-center mb-8 text-sm">Enter password to manage site</p>
-                <input type="password" id="pass" class="w-full bg-slate-100 border-none p-4 rounded-2xl mb-4" placeholder="Password">
-                <button onclick="UI.login()" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-200">Enter Dashboard</button>
-                <button onclick="State.currentView='public';UI.render()" class="w-full mt-4 text-slate-400 text-xs font-bold uppercase tracking-widest">Back</button>
+        <div class="min-h-screen flex items-center justify-center bg-gray-900 p-6">
+            <div class="bg-white p-8 rounded-[2rem] shadow-2xl w-full max-w-sm">
+                <h2 class="text-2xl font-black mb-6 text-center">Admin Panel</h2>
+                <input type="password" id="pw" class="w-full bg-gray-100 p-4 rounded-xl mb-4 outline-none border-2 border-transparent focus:border-indigo-500" placeholder="Password">
+                <button onclick="UI.login()" class="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold">Access Dashboard</button>
+                <button onclick="State.currentView='public';UI.render()" class="w-full mt-4 text-gray-400 text-sm">Exit</button>
             </div>
         </div>`;
     },
 
     login() {
-        if(document.getElementById('pass').value === 'ilovegoon') {
+        if(document.getElementById('pw').value === 'ilovegoon') {
             State.isAdmin = true; State.currentView = 'admin'; UI.render();
-        } else alert('Wrong');
+        } else alert('Access Denied');
     },
 
     renderPublic() {
         return `
-        <nav class="glass sticky top-0 z-50 px-6 py-4 border-b border-white">
+        <nav class="glass sticky top-0 z-50 px-6 py-4 border-b border-gray-200">
             <div class="max-w-7xl mx-auto flex justify-between items-center">
-                <h1 class="text-2xl font-black text-indigo-600">VIDEO.HUB</h1>
-                <div class="flex items-center gap-4">
-                    <div class="bg-rose-500 text-white px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2">
-                        <span class="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
-                        <span id="liveCounter">${State.liveCount}</span> LIVE
+                <div class="flex flex-col">
+                    <h1 class="text-2xl font-black text-indigo-600 tracking-tighter">MEDIA.PRO</h1>
+                    <div class="flex items-center gap-2 mt-1">
+                        <div id="status-dot" class="w-2 h-2 rounded-full ${State.isConnected ? 'online' : 'offline'}"></div>
+                        <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">${State.isConnected ? 'Connected to Mesh' : 'Connecting...'}</span>
                     </div>
-                    <button onclick="State.currentView='login';UI.render()" class="text-slate-400 hover:text-indigo-600 transition-colors">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div class="bg-rose-100 text-rose-600 px-3 py-1 rounded-full text-[10px] font-black">
+                        <span id="liveCounter">${State.liveCount}</span> VIEWERS
+                    </div>
+                    <button onclick="State.currentView='login';UI.render()" class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center hover:bg-indigo-600 hover:text-white transition-all">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                     </button>
                 </div>
             </div>
         </nav>
         <main class="max-w-7xl mx-auto p-6">
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                ${State.videos.length === 0 ? '<div class="col-span-full text-center py-20 text-gray-400">Waiting for global data...</div>' : ''}
                 ${State.videos.sort((a,b)=>b.time-a.time).map(v => this.renderCard(v)).join('')}
             </div>
         </main>`;
@@ -151,50 +155,62 @@ const UI = {
 
     renderAdmin() {
         return `
-        <div class="min-h-screen bg-slate-100 p-6">
-            <div class="max-w-4xl mx-auto">
+        <div class="min-h-screen bg-gray-50 p-6">
+            <div class="max-w-5xl mx-auto">
                 <div class="flex justify-between items-center mb-10">
-                    <h2 class="text-3xl font-black">Dashboard</h2>
-                    <button onclick="State.currentView='public';UI.render()" class="bg-white px-6 py-2 rounded-full font-bold shadow-sm">Exit</button>
+                    <h2 class="text-3xl font-black">Control Center</h2>
+                    <button onclick="State.currentView='public';UI.render()" class="bg-indigo-600 text-white px-8 py-2 rounded-full font-bold shadow-lg">View Live Site</button>
                 </div>
                 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div class="bg-white p-8 rounded-[2rem] shadow-sm">
-                        <h3 class="font-bold mb-6 text-indigo-600">Add New Video</h3>
-                        <div class="space-y-4">
-                            <input id="upTitle" placeholder="Title" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
-                            <input id="upTags" placeholder="Tags (comma separated)" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
-                            <select id="upCat" class="w-full bg-slate-50 p-4 rounded-xl outline-none">
-                                <option value="">Category</option>
-                                ${State.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
-                            </select>
-                            <div class="p-4 border-2 border-dashed rounded-xl border-slate-200">
-                                <p class="text-[10px] font-bold text-slate-400 uppercase mb-2">Video File (Any Size)</p>
-                                <input type="file" id="upFile" accept="video/*" class="text-xs">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div class="lg:col-span-1 space-y-6">
+                        <div class="bg-white p-6 rounded-[2rem] shadow-sm border">
+                            <h3 class="font-bold mb-4 text-indigo-600">Categories</h3>
+                            <div class="flex gap-2 mb-4">
+                                <input id="nCat" class="flex-1 bg-gray-100 p-2 rounded-lg outline-none text-sm" placeholder="Title...">
+                                <button onclick="UI.addCat()" class="bg-indigo-600 text-white px-4 rounded-lg font-bold">+</button>
                             </div>
-                            <button id="upBtn" onclick="UI.upload()" class="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold">Publish to Global Feed</button>
+                            <div class="space-y-2 max-h-40 overflow-y-auto">
+                                ${State.categories.map(c=>`
+                                    <div class="flex justify-between text-xs font-bold p-2 bg-gray-50 rounded-lg">
+                                        <span>${c.name}</span>
+                                        <button onclick="UI.delCat('${c.id}')" class="text-rose-500">✕</button>
+                                    </div>
+                                `).join('')}
+                            </div>
                         </div>
                     </div>
 
-                    <div class="space-y-8">
-                        <div class="bg-white p-8 rounded-[2rem] shadow-sm">
-                            <h3 class="font-bold mb-4">Categories</h3>
-                            <div class="flex gap-2 mb-4">
-                                <input id="newCat" class="flex-1 bg-slate-50 p-2 rounded-lg outline-none" placeholder="New Cat...">
-                                <button onclick="UI.addCat()" class="bg-indigo-600 text-white px-4 rounded-lg">+</button>
+                    <div class="lg:col-span-2 space-y-6">
+                        <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border">
+                            <h3 class="text-xl font-bold mb-6">Publish Global Media</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                <input id="vTitle" placeholder="Video Title" class="bg-gray-50 p-4 rounded-xl outline-none border-2 border-transparent focus:border-indigo-500">
+                                <select id="vCat" class="bg-gray-50 p-4 rounded-xl outline-none">
+                                    <option value="">Select Category</option>
+                                    ${State.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
+                                </select>
                             </div>
-                            <div class="flex flex-wrap gap-2">
-                                ${State.categories.map(c=>`<span class="bg-slate-100 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2">${c.name} <button onclick="UI.delCat('${c.id}')" class="text-rose-500">✕</button></span>`).join('')}
+                            <div class="mb-4">
+                                <input id="vTags" placeholder="Tags (action, funny, trailer)" class="w-full bg-gray-50 p-4 rounded-xl outline-none">
                             </div>
+                            <div class="p-6 border-2 border-dashed border-gray-200 rounded-2xl mb-6 text-center">
+                                <p class="text-xs font-bold text-gray-400 uppercase mb-2">Select Video File</p>
+                                <input type="file" id="vFile" accept="video/*" class="text-xs mx-auto">
+                            </div>
+                            <button id="vBtn" onclick="UI.upload()" class="w-full bg-indigo-600 text-white py-5 rounded-2xl font-bold text-lg shadow-xl shadow-indigo-100">Upload & Sync Globally</button>
                         </div>
 
-                        <div class="bg-white p-8 rounded-[2rem] shadow-sm">
-                            <h3 class="font-bold mb-4">Manage Feed</h3>
-                            <div class="divide-y max-h-60 overflow-y-auto">
+                        <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border">
+                            <h3 class="font-bold mb-4">Manage Content</h3>
+                            <div class="divide-y max-h-80 overflow-y-auto">
                                 ${State.videos.map(v=>`
-                                    <div class="py-3 flex justify-between items-center">
-                                        <span class="text-sm font-medium truncate w-40">${v.title}</span>
-                                        <button onclick="UI.delVid('${v.id}')" class="text-rose-500 text-xs font-bold uppercase">Delete</button>
+                                    <div class="py-4 flex justify-between items-center">
+                                        <div class="flex items-center gap-4">
+                                            <div class="w-10 h-10 bg-gray-200 rounded-lg"></div>
+                                            <span class="font-bold text-sm">${v.title}</span>
+                                        </div>
+                                        <button onclick="UI.delVid('${v.id}')" class="text-rose-500 text-xs font-black uppercase tracking-widest">Delete</button>
                                     </div>
                                 `).join('')}
                             </div>
@@ -207,32 +223,35 @@ const UI = {
 
     renderCard(v) {
         return `
-        <div onclick="UI.play('${v.id}')" class="group cursor-pointer">
-            <div class="aspect-video bg-slate-900 rounded-[2rem] overflow-hidden relative shadow-xl transform transition-transform group-hover:scale-[1.03]">
-                <video src="${v.url}" muted></video>
-                <div class="absolute inset-0 bg-indigo-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <div class="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-2xl">
-                        <svg class="w-8 h-8 text-indigo-600 ml-1" fill="currentColor" viewBox="0 0 20 20"><path d="M4.5 3.5l11 6.5-11 6.5V3.5z"/></svg>
+        <div onclick="UI.play('${v.id}')" class="video-card group cursor-pointer">
+            <div class="aspect-video bg-gray-900 rounded-[2rem] overflow-hidden relative shadow-lg">
+                <video src="${v.url}" muted class="w-full h-full object-cover"></video>
+                <div class="absolute inset-0 bg-indigo-900/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div class="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-2xl">
+                        <svg class="w-6 h-6 text-indigo-600 ml-1" fill="currentColor" viewBox="0 0 20 20"><path d="M4.5 3.5l11 6.5-11 6.5V3.5z"/></svg>
                     </div>
                 </div>
             </div>
             <div class="mt-4 px-2">
+                <div class="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1">
+                    ${State.categories.find(c=>c.id===v.category)?.name || 'General'}
+                </div>
                 <h3 class="font-bold text-lg leading-tight truncate">${v.title}</h3>
-                <div class="flex gap-2 mt-1">
-                    ${v.tags.map(t=>`<span class="text-[10px] font-bold text-slate-400">#${t.trim()}</span>`).join('')}
+                <div class="flex gap-2 mt-2">
+                    ${v.tags.map(t=>`<span class="text-[10px] bg-white border px-2 py-0.5 rounded text-gray-400 font-bold">#${t.trim()}</span>`).join('')}
                 </div>
             </div>
         </div>`;
     },
 
     async upload() {
-        const title = document.getElementById('upTitle').value;
-        const file = document.getElementById('upFile').files[0];
-        const btn = document.getElementById('upBtn');
-        if(!title || !file) return alert("Missing Info");
+        const title = document.getElementById('vTitle').value;
+        const file = document.getElementById('vFile').files[0];
+        const btn = document.getElementById('vBtn');
+        if(!title || !file) return alert("Fill all fields");
 
         btn.disabled = true;
-        btn.innerText = "Processing Large File...";
+        btn.innerText = "Encoding & Broadcasting...";
 
         const reader = new FileReader();
         reader.onload = () => {
@@ -240,35 +259,37 @@ const UI = {
             videoDB.get(id).put({
                 title, 
                 url: reader.result, 
-                category: document.getElementById('upCat').value,
-                tags: document.getElementById('upTags').value,
+                category: document.getElementById('vCat').value,
+                tags: document.getElementById('vTags').value,
                 time: Date.now()
             });
             btn.disabled = false;
-            btn.innerText = "Published!";
+            btn.innerText = "Published Globally!";
             setTimeout(()=>UI.render(), 1000);
         };
         reader.readAsDataURL(file);
     },
 
     addCat() {
-        const n = document.getElementById('newCat').value;
+        const n = document.getElementById('nCat').value;
         if(n) catDB.get(Math.random().toString(36).substr(2,9)).put(n);
-        document.getElementById('newCat').value = '';
+        document.getElementById('nCat').value = '';
     },
 
-    delCat(id) { if(confirm("Del?")) catDB.get(id).put(null); },
-    delVid(id) { if(confirm("Del?")) videoDB.get(id).put(null); },
+    delCat(id) { if(confirm("Delete Category?")) catDB.get(id).put(null); },
+    delVid(id) { if(confirm("Delete Video for everyone?")) videoDB.get(id).put(null); },
 
     play(id) {
         const v = State.videos.find(x=>x.id===id);
         const m = document.createElement('div');
         m.className = 'fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4';
         m.onclick = (e) => { if(e.target === m) m.remove(); };
-        m.innerHTML = `<div class="w-full max-w-5xl relative">
-            <button onclick="this.closest('.fixed').remove()" class="absolute -top-12 right-0 text-white font-bold">CLOSE ✕</button>
+        m.innerHTML = `<div class="w-full max-w-5xl">
             <video src="${v.url}" controls autoplay class="w-full rounded-3xl shadow-2xl"></video>
-            <div class="mt-6 text-white"><h2 class="text-3xl font-black">${v.title}</h2></div>
+            <div class="mt-6 flex justify-between items-center text-white">
+                <h2 class="text-2xl font-bold">${v.title}</h2>
+                <button onclick="this.closest('.fixed').remove()" class="px-6 py-2 bg-white/10 rounded-full font-bold">Close</button>
+            </div>
         </div>`;
         document.body.appendChild(m);
     }
