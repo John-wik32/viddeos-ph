@@ -3,28 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Video Library CMS</title>
+<title>Video Library CMS - Live Global Sync</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
-
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
 <style>
     ::-webkit-scrollbar { width: 8px; }
     ::-webkit-scrollbar-track { background: #f1f1f1; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
     
-    @keyframes pulse-live {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
-    }
-    .animate-pulse-live {
-        animation: pulse-live 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    }
-    .video-container video {
+    .video-card video {
         width: 100%;
-        max-height: 80vh;
-        background: black;
+        height: 100%;
+        object-fit: cover;
+    }
+    .modal-overlay {
+        background: rgba(0,0,0,0.85);
+        backdrop-filter: blur(4px);
     }
 </style>
 </head>
@@ -32,492 +27,259 @@
 <div id="app"></div>
 
 <script>
-/**
- * TO MAKE THIS WORK FOR EVERYONE:
- * Paste your Firebase config here. 
- * Get this from: Firebase Console -> Project Settings -> General -> Your Apps
- */
-const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-    databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_PROJECT_ID.appspot.com",
-    messagingSenderId: "YOUR_ID",
-    appId: "YOUR_APP_ID"
-};
-
-// Initialize Firebase
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
-
-// --- Data & State Management ---
+// --- Initialize Global Database (Gun.js) ---
+// This connects all users together automatically
+const gun = Gun([
+    'https://gun-manhattan.herokuapp.com/gun',
+    'https://peer.wall.org/gun'
+]);
+const videoDB = gun.get('netlify_cms_videos_v2');
+const settingsDB = gun.get('netlify_cms_settings_v2');
+const presenceDB = gun.get('netlify_cms_presence_v2');
 
 const State = {
     isAdmin: false,
     currentView: 'public',
     adminView: 'videos',
     videos: [],
-    categories: [],
-    tags: [],
-    siteSettings: {},
-    searchTerm: '',
-    selectedCategory: 'all',
-    selectedTag: 'all',
-    sortBy: 'newest',
+    siteSettings: { title: 'Video Library', subtitle: 'Live Global Collection' },
     liveUsers: 1,
-    
+    mySessionId: Math.random().toString(36).substr(2, 9),
+
     async init() {
-        // 1. Listen for Live User Count (Presence)
-        const userRef = db.ref('presence/' + Date.now());
-        userRef.onDisconnect().remove();
-        userRef.set(true);
-
-        db.ref('presence').on('value', (snapshot) => {
-            this.liveUsers = snapshot.numChildren();
-            const counterEl = document.getElementById('liveCounter');
-            if (counterEl) counterEl.innerText = this.liveUsers;
-        });
-
-        // 2. Listen for Site Settings
-        db.ref('siteSettings').on('value', (snapshot) => {
-            this.siteSettings = snapshot.val() || {title: 'Video Library', subtitle: 'Explore our collection', featuredCount: 3};
-            UI.render();
-        });
-
-        // 3. Listen for Categories
-        db.ref('categories').on('value', (snapshot) => {
-            const data = snapshot.val();
-            this.categories = data ? Object.values(data) : [];
-            UI.render();
-        });
-
-        // 4. Listen for Videos
-        db.ref('videos').on('value', (snapshot) => {
-            const data = snapshot.val();
-            this.videos = data ? Object.values(data) : [];
-            this.updateAllTags();
-            UI.render();
-        });
-    },
-
-    updateAllTags() {
-        const allTags = new Set();
-        this.videos.forEach(v => {
-            if (v.tags && Array.isArray(v.tags)) {
-                v.tags.forEach(t => allTags.add(t));
+        // 1. Sync Site Settings
+        settingsDB.on(data => {
+            if(data) {
+                this.siteSettings.title = data.title || this.siteSettings.title;
+                this.siteSettings.subtitle = data.subtitle || this.siteSettings.subtitle;
+                UI.render();
             }
         });
-        this.tags = [...allTags].sort();
-    },
-    
-    async saveSettings() { await db.ref('siteSettings').set(this.siteSettings); },
-    
-    async addVideo(video) {
-        const id = Date.now().toString();
-        const newVideo = {...video, id, views: 0, createdAt: new Date().toISOString()};
-        await db.ref('videos/' + id).set(newVideo);
-    },
-    
-    async updateVideo(id, updates) {
-        await db.ref('videos/' + id).update(updates);
-    },
-    
-    async deleteVideo(id) {
-        if (confirm('Delete this video?')) {
-            await db.ref('videos/' + id).remove();
-        }
-    },
-    
-    async incrementViews(id) {
-        const video = this.videos.find(v => v.id === id);
-        if (video) {
-            await db.ref('videos/' + id).update({ views: (video.views || 0) + 1 });
-        }
-    },
-    
-    async addCategory(category) {
-        const id = Date.now().toString();
-        await db.ref('categories/' + id).set({...category, id});
-    },
-    
-    async deleteCategory(id) {
-        if (confirm('Delete this category?')) {
-            await db.ref('categories/' + id).remove();
-        }
-    },
-    
-    getFilteredVideos() {
-        let filtered = [...this.videos];
-        if (this.searchTerm) {
-            const term = this.searchTerm.toLowerCase();
-            filtered = filtered.filter(v => v.title.toLowerCase().includes(term) || (v.description && v.description.toLowerCase().includes(term)));
-        }
-        if (this.selectedCategory !== 'all') {
-            filtered = filtered.filter(v => v.category === this.selectedCategory);
-        }
-        if (this.selectedTag !== 'all') {
-            filtered = filtered.filter(v => v.tags && v.tags.includes(this.selectedTag));
-        }
-        filtered.sort((a, b) => {
-            switch (this.sortBy) {
-                case 'newest': return new Date(b.createdAt) - new Date(a.createdAt);
-                case 'oldest': return new Date(a.createdAt) - new Date(b.createdAt);
-                case 'mostViewed': return (b.views || 0) - (a.views || 0);
-                default: return 0;
+
+        // 2. Sync Videos (Global)
+        videoDB.map().on((data, id) => {
+            if (data) {
+                const index = this.videos.findIndex(v => v.id === id);
+                if (index > -1) {
+                    this.videos[index] = { ...data, id };
+                } else {
+                    this.videos.push({ ...data, id });
+                }
+                UI.render();
+            } else {
+                // Handle deletion
+                this.videos = this.videos.filter(v => v.id !== id);
+                UI.render();
             }
         });
-        return filtered;
-    },
-    
-    getFeaturedVideos() {
-        return this.videos.filter(v => v.featured).slice(0, this.siteSettings.featuredCount);
-    }
-};
 
-const FileHandler = {
-    async fileToBase64(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
+        // 3. Presence / Live Count Logic
+        setInterval(() => {
+            presenceDB.get(this.mySessionId).put(Date.now());
+        }, 3000);
+
+        presenceDB.map().on((timestamp, id) => {
+            const now = Date.now();
+            // If we haven't heard from this user in 10 seconds, ignore them
+            if (now - timestamp > 10000) {
+                presenceDB.get(id).put(null);
+            }
+            this.updateLiveCount();
         });
+
+        UI.render();
     },
-    
-    async handleVideoUpload(file) {
-        if (!file.type.startsWith('video/')) {
-            alert('Please select a video file');
-            return null;
-        }
-        // Note: Realtime Database has a 10MB limit per record. 
-        // For larger files, you should use Firebase Storage.
-        if (file.size > 10 * 1024 * 1024) {
-            alert('File too large (Max 10MB for direct DB upload). Use a YouTube link or set up Firebase Storage.');
-            return null;
-        }
-        try {
-            return await this.fileToBase64(file);
-        } catch (error) {
-            return null;
-        }
+
+    updateLiveCount() {
+        let count = 0;
+        presenceDB.once(data => {
+            if(data) {
+                // Count non-null entries
+                count = Object.values(data).filter(v => v && typeof v === 'number').length;
+                this.liveUsers = count || 1;
+                const counterEl = document.getElementById('liveCounter');
+                if (counterEl) counterEl.innerText = this.liveUsers;
+            }
+        });
     }
 };
-
-// --- UI Logic ---
 
 const UI = {
-    currentTags: [],
-    uploadedVideoData: null,
-    uploadedThumbnailData: null,
-    
     render() {
         const app = document.getElementById('app');
         if (State.currentView === 'login') {
             app.innerHTML = this.renderLogin();
-            this.attachLoginListeners();
         } else if (State.currentView === 'admin') {
             app.innerHTML = this.renderAdmin();
-            this.attachAdminListeners();
         } else {
             app.innerHTML = this.renderPublic();
-            this.attachPublicListeners();
         }
     },
 
     renderLogin() {
-        return `<div class="min-h-screen flex items-center justify-center p-4">
-            <div class="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
-                <h1 class="text-2xl font-bold mb-6 text-center">Admin Login</h1>
-                <form id="loginForm" class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium mb-1">Password</label>
-                        <input type="password" id="adminPassword" class="w-full border rounded px-3 py-2" placeholder="Enter password" required>
-                    </div>
-                    <button type="submit" class="w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 font-medium">Login</button>
-                    <button type="button" id="backToPublic" class="w-full bg-gray-200 px-4 py-2 rounded hover:bg-gray-300 font-medium">Back to Site</button>
-                </form>
+        return `
+        <div class="min-h-screen flex items-center justify-center bg-gray-100 p-4">
+            <div class="bg-white p-8 rounded-xl shadow-xl w-full max-w-md">
+                <h2 class="text-2xl font-bold mb-6 text-center">Admin Access</h2>
+                <input type="password" id="adminPass" class="w-full border p-3 rounded mb-4" placeholder="Password">
+                <button onclick="UI.handleLogin()" class="w-full bg-blue-600 text-white py-3 rounded font-bold hover:bg-blue-700">Login</button>
+                <button onclick="State.currentView='public';UI.render()" class="w-full mt-2 text-gray-500 text-sm">Cancel</button>
             </div>
         </div>`;
+    },
+
+    handleLogin() {
+        const pass = document.getElementById('adminPass').value;
+        if(pass === 'ilovegoon') {
+            State.isAdmin = true;
+            State.currentView = 'admin';
+            UI.render();
+        } else {
+            alert('Wrong Password');
+        }
     },
 
     renderPublic() {
-        const featured = State.getFeaturedVideos();
-        const filtered = State.getFilteredVideos();
-        return `<div class="bg-white shadow-sm sticky top-0 z-10">
-            <div class="max-w-7xl mx-auto px-4 py-4">
-                <div class="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
-                    <div>
-                        <h1 class="text-2xl md:text-3xl font-bold text-gray-900">${State.siteSettings.title}</h1>
-                        <p class="text-gray-600 text-sm md:text-base">${State.siteSettings.subtitle}</p>
+        return `
+        <nav class="bg-white shadow-sm sticky top-0 z-50">
+            <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+                <div>
+                    <h1 class="text-2xl font-black text-blue-600">${State.siteSettings.title}</h1>
+                    <p class="text-gray-500 text-xs uppercase tracking-widest">${State.siteSettings.subtitle}</p>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div class="flex items-center gap-2 bg-red-50 px-3 py-1.5 rounded-full border border-red-100">
+                        <span class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                        <span class="text-red-600 text-sm font-bold"><span id="liveCounter">${State.liveUsers}</span> ONLINE</span>
                     </div>
-                    
-                    <div class="flex items-center gap-2 bg-red-50 text-red-600 px-3 py-1 rounded-full border border-red-100">
-                        <span class="relative flex h-3 w-3">
-                          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                          <span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
-                        </span>
-                        <span class="text-sm font-bold"><span id="liveCounter">${State.liveUsers}</span> Live Viewers</span>
-                    </div>
+                    <button onclick="State.currentView='login';UI.render()" class="text-gray-400 hover:text-blue-600">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </nav>
 
-                    <div class="flex gap-2 w-full md:w-auto">
-                        <input type="text" id="searchInput" class="w-full md:w-64 border rounded-lg px-4 py-2" placeholder="Search videos..." value="${State.searchTerm}">
-                        <button id="adminLoginBtn" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-black text-sm font-medium">Admin</button>
-                    </div>
-                </div>
+        <main class="max-w-7xl mx-auto px-4 py-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                ${State.videos.length === 0 ? '<p class="col-span-full text-center py-20 text-gray-400">No videos uploaded yet.</p>' : ''}
+                ${State.videos.map(v => this.renderVideoCard(v)).join('')}
             </div>
-        </div>
-        <div class="bg-white border-b">
-            <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap gap-3">
-                <select id="categoryFilter" class="border rounded px-3 py-2 text-sm bg-gray-50">
-                    <option value="all">All Categories</option>
-                    ${State.categories.map(c => `<option value="${c.id}"${State.selectedCategory === c.id ? ' selected' : ''}>${c.name}</option>`).join('')}
-                </select>
-                <select id="tagFilter" class="border rounded px-3 py-2 text-sm bg-gray-50">
-                    <option value="all">All Tags</option>
-                    ${State.tags.map(t => `<option value="${t}"${State.selectedTag === t ? ' selected' : ''}>#${t}</option>`).join('')}
-                </select>
-            </div>
-        </div>
-        <div class="max-w-7xl mx-auto px-4 py-8">
-            ${featured.length > 0 && !State.searchTerm ? `
-            <div class="mb-12">
-                <h2 class="text-2xl font-bold mb-6 flex items-center gap-2">⭐ Featured</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    ${featured.map(v => this.renderVideoCard(v, false)).join('')}
-                </div>
-            </div>` : ''}
-            
-            <h2 class="text-2xl font-bold mb-6">📹 Videos (${filtered.length})</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                ${filtered.map(v => this.renderVideoCard(v, false)).join('')}
-            </div>
-        </div>`;
+        </main>`;
     },
 
     renderAdmin() {
-        return `<div class="bg-gray-900 text-white sticky top-0 z-20 shadow-md">
-            <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
-                <h1 class="text-xl font-bold">Admin Dashboard</h1>
-                <button id="viewPublic" class="bg-blue-600 px-4 py-2 rounded text-sm">View Site</button>
-            </div>
-        </div>
-        <div class="bg-white border-b shadow-sm">
-            <div class="max-w-7xl mx-auto px-4 flex gap-4">
-                <button class="py-3 ${State.adminView === 'videos' ? 'border-b-2 border-blue-500' : ''}" onclick="State.adminView='videos';UI.render()">Videos</button>
-                <button class="py-3 ${State.adminView === 'categories' ? 'border-b-2 border-blue-500' : ''}" onclick="State.adminView='categories';UI.render()">Categories</button>
-                <button class="py-3 ${State.adminView === 'settings' ? 'border-b-2 border-blue-500' : ''}" onclick="State.adminView='settings';UI.render()">Settings</button>
-            </div>
-        </div>
-        <div class="max-w-7xl mx-auto px-4 py-8">
-            ${State.adminView === 'videos' ? this.renderVideosAdmin() : 
-              State.adminView === 'categories' ? this.renderCategoriesAdmin() : 
-              this.renderSettingsAdmin()}
-        </div>`;
-    },
+        return `
+        <div class="min-h-screen bg-gray-50">
+            <header class="bg-gray-900 text-white p-4 flex justify-between items-center">
+                <span class="font-bold">Admin Dashboard</span>
+                <button onclick="State.currentView='public';UI.render()" class="bg-white/10 px-4 py-1 rounded text-sm">Exit</button>
+            </header>
+            <div class="max-w-4xl mx-auto p-6">
+                <div class="bg-white rounded-xl shadow p-6 mb-8">
+                    <h3 class="text-lg font-bold mb-4">Upload New Media</h3>
+                    <div class="grid gap-4">
+                        <input type="text" id="newTitle" placeholder="Video Title" class="border p-3 rounded">
+                        <input type="file" id="newFile" accept="video/*,image/*" class="border p-3 rounded">
+                        <p class="text-xs text-gray-400">Supports MP4, WebM, PNG, JPG (Max 10MB recommended for sync speed)</p>
+                        <button onclick="UI.handleUpload()" id="upBtn" class="bg-blue-600 text-white py-3 rounded font-bold">Upload to Global Feed</button>
+                    </div>
+                </div>
 
-    renderVideosAdmin() {
-        return `<div class="flex justify-between items-center mb-6">
-            <h2 class="text-2xl font-bold">Manage Videos</h2>
-            <button onclick="UI.showVideoModal()" class="bg-blue-500 text-white px-4 py-2 rounded">Add Video</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            ${State.videos.map(v => this.renderVideoCard(v, true)).join('')}
-        </div>`;
-    },
-
-    renderCategoriesAdmin() {
-        return `<div class="flex justify-between items-center mb-6">
-            <h2 class="text-2xl font-bold">Categories</h2>
-            <button onclick="UI.showCategoryModal()" class="bg-blue-500 text-white px-4 py-2 rounded">Add Category</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            ${State.categories.map(c => `<div class="bg-white p-4 rounded shadow flex justify-between">
-                <span>${c.name}</span>
-                <button onclick="State.deleteCategory('${c.id}')" class="text-red-500">🗑️</button>
-            </div>`).join('')}
-        </div>`;
-    },
-
-    renderSettingsAdmin() {
-        return `<div class="max-w-md bg-white p-6 rounded shadow">
-            <h2 class="text-xl font-bold mb-4">Site Settings</h2>
-            <div class="space-y-4">
-                <input type="text" id="sTitle" value="${State.siteSettings.title}" class="w-full border p-2 rounded">
-                <input type="text" id="sSub" value="${State.siteSettings.subtitle}" class="w-full border p-2 rounded">
-                <button onclick="UI.saveSettings()" class="w-full bg-blue-500 text-white py-2 rounded">Save Settings</button>
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h3 class="text-lg font-bold mb-4">Manage Global Content</h3>
+                    <div class="space-y-4">
+                        ${State.videos.map(v => `
+                            <div class="flex items-center justify-between border-b pb-2">
+                                <span>${v.title}</span>
+                                <button onclick="UI.deleteVideo('${v.id}')" class="text-red-500 text-sm">Delete</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
             </div>
         </div>`;
     },
 
-    saveSettings() {
-        State.siteSettings.title = document.getElementById('sTitle').value;
-        State.siteSettings.subtitle = document.getElementById('sSub').value;
-        State.saveSettings();
-        alert('Settings Saved!');
-    },
-
-    renderVideoCard(v, isAdmin) {
-        const cat = State.categories.find(c => c.id === v.category);
-        const isUploaded = v.url && v.url.startsWith('data:video');
+    renderVideoCard(v) {
+        // Detect if content is video or image
+        const isVideo = v.url.includes('video/') || v.url.startsWith('data:video') || v.url.match(/\.(mp4|webm|mov|ogg)$/i);
         
-        return `<div class="bg-white rounded-lg shadow overflow-hidden flex flex-col h-full">
-            <div class="relative pb-[56.25%] bg-gray-200">
-                ${v.thumbnail ? `<img src="${v.thumbnail}" class="absolute inset-0 w-full h-full object-cover">` : '<div class="absolute inset-0 flex items-center justify-center text-4xl">📹</div>'}
-                ${isUploaded ? '<div class="absolute top-2 left-2 bg-green-500 text-white px-2 py-1 rounded text-xs">UPLOADED</div>' : ''}
+        return `
+        <div class="video-card bg-white rounded-2xl shadow-lg overflow-hidden transition-transform hover:scale-[1.02]">
+            <div class="aspect-video bg-black relative group">
+                ${isVideo ? 
+                    `<video src="${v.url}" class="w-full h-full" muted loop onmouseover="this.play()" onmouseout="this.pause()"></video>` : 
+                    `<img src="${v.url}" class="w-full h-full object-cover">`
+                }
+                <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                    <button onclick="UI.openPlayer('${v.id}')" class="bg-white text-black px-6 py-2 rounded-full font-bold">Watch Full</button>
+                </div>
             </div>
-            <div class="p-4 flex-1 flex flex-col">
-                <h3 class="font-bold line-clamp-2 mb-2">${v.title}</h3>
-                <div class="flex justify-between text-xs text-gray-500 mb-4">
-                    <span>${cat ? cat.name : 'Uncategorized'}</span>
-                    <span>👁️ ${v.views || 0}</span>
-                </div>
-                <div class="mt-auto flex gap-2">
-                    <button onclick="UI.watchVideo('${v.id}')" class="flex-1 bg-blue-600 text-white py-2 rounded text-sm">Watch</button>
-                    ${isAdmin ? `<button onclick="State.deleteVideo('${v.id}')" class="bg-red-50 px-2 rounded text-red-500">🗑️</button>` : ''}
-                </div>
+            <div class="p-4">
+                <h3 class="font-bold text-lg truncate">${v.title}</h3>
+                <p class="text-gray-400 text-sm">Shared globally</p>
             </div>
         </div>`;
     },
 
-    showVideoModal(video = null) {
-        this.currentTags = [];
-        this.uploadedVideoData = null;
-        
-        const modal = document.createElement('div');
-        modal.id = 'videoModal';
-        modal.className = 'fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 overflow-y-auto';
-        modal.innerHTML = `<div class="bg-white rounded-lg p-6 max-w-lg w-full">
-            <h2 class="text-xl font-bold mb-4">Add Video</h2>
-            <form id="videoForm" class="space-y-4">
-                <input type="text" id="vTitle" placeholder="Title" class="w-full border p-2 rounded" required>
-                <textarea id="vDesc" placeholder="Description" class="w-full border p-2 rounded"></textarea>
-                
-                <div class="p-3 bg-gray-50 rounded border">
-                    <label class="block text-xs font-bold mb-1">Source</label>
-                    <input type="url" id="vUrl" placeholder="YouTube URL" class="w-full border p-2 rounded mb-2">
-                    <div class="text-center text-xs text-gray-400 mb-2">- OR -</div>
-                    <input type="file" id="vFile" accept="video/*" class="w-full text-xs">
-                    <p id="vLoading" class="hidden text-orange-500 text-xs mt-1 animate-pulse">Processing video...</p>
-                </div>
+    async handleUpload() {
+        const title = document.getElementById('newTitle').value;
+        const file = document.getElementById('newFile').files[0];
+        const btn = document.getElementById('upBtn');
 
-                <div class="flex gap-4">
-                    <select id="vCat" class="flex-1 border p-2 rounded">
-                        <option value="">Category</option>
-                        ${State.categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
-                    </select>
-                    <label class="flex items-center gap-2 text-sm">
-                        <input type="checkbox" id="vFeatured"> Featured
-                    </label>
-                </div>
+        if(!title || !file) return alert("Please provide title and file");
 
-                <div class="flex gap-2">
-                    <button type="submit" id="saveBtn" class="flex-1 bg-blue-600 text-white py-2 rounded">Save</button>
-                    <button type="button" onclick="UI.closeModal()" class="flex-1 bg-gray-200 py-2 rounded">Cancel</button>
-                </div>
-            </form>
-        </div>`;
-        document.body.appendChild(modal);
+        btn.disabled = true;
+        btn.innerText = "Processing & Syncing...";
 
-        document.getElementById('vFile').onchange = async (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                document.getElementById('vLoading').classList.remove('hidden');
-                this.uploadedVideoData = await FileHandler.handleVideoUpload(file);
-                document.getElementById('vLoading').innerText = this.uploadedVideoData ? "✅ Video Ready" : "❌ Too Large (Max 10MB)";
-            }
-        };
-
-        document.getElementById('videoForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const url = this.uploadedVideoData || document.getElementById('vUrl').value;
-            if (!url) return alert("Add a URL or File");
-
-            const btn = document.getElementById('saveBtn');
-            btn.disabled = true;
-            btn.innerText = "Uploading to Cloud...";
-
-            await State.addVideo({
-                title: document.getElementById('vTitle').value,
-                description: document.getElementById('vDesc').value,
-                url: url,
-                category: document.getElementById('vCat').value,
-                featured: document.getElementById('vFeatured').checked,
-                thumbnail: "" // You can add thumbnail logic similarly
+        const reader = new FileReader();
+        reader.onload = () => {
+            const base64 = reader.result;
+            const id = Math.random().toString(36).substr(2, 9);
+            videoDB.get(id).put({
+                title: title,
+                url: base64,
+                timestamp: Date.now()
             });
-            UI.closeModal();
+            btn.disabled = false;
+            btn.innerText = "Upload to Global Feed";
+            alert("Uploaded! Everyone can see it now.");
+            UI.render();
         };
+        reader.readAsDataURL(file);
     },
 
-    showCategoryModal() {
-        const name = prompt("Category Name:");
-        if (name) State.addCategory({name});
+    deleteVideo(id) {
+        if(confirm("Delete for everyone?")) {
+            videoDB.get(id).put(null);
+        }
     },
 
-    closeModal() {
-        const m = document.getElementById('videoModal');
-        if (m) m.remove();
-    },
-
-    watchVideo(id) {
-        const video = State.videos.find(v => v.id === id);
-        if(!video) return;
-
-        State.incrementViews(id);
+    openPlayer(id) {
+        const v = State.videos.find(item => item.id === id);
+        const isVideo = v.url.includes('video/') || v.url.startsWith('data:video');
         
         const modal = document.createElement('div');
-        modal.className = 'fixed inset-0 bg-black z-50 flex items-center justify-center p-4';
+        modal.className = 'fixed inset-0 z-[100] modal-overlay flex items-center justify-center p-4';
+        modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
         
-        const isDirect = video.url.startsWith('data:video') || video.url.match(/\.(mp4|webm|mov)$/);
-        
-        if (isDirect) {
-            modal.innerHTML = `<div class="relative w-full max-w-4xl bg-black rounded shadow-2xl">
-                <button onclick="this.closest('.fixed').remove()" class="absolute -top-10 right-0 text-white">Close ✕</button>
-                <video controls autoplay class="w-full rounded">
-                    <source src="${video.url}">
-                </video>
-            </div>`;
-        } else {
-            // YouTube Handler
-            let embedUrl = video.url;
-            if (video.url.includes('youtube.com') || video.url.includes('youtu.be')) {
-                const vidId = video.url.split('v=')[1]?.split('&')[0] || video.url.split('/').pop();
-                embedUrl = `https://www.youtube.com/embed/${vidId}?autoplay=1`;
-            }
-            modal.innerHTML = `<div class="relative w-full max-w-4xl aspect-video bg-black rounded">
-                <button onclick="this.closest('.fixed').remove()" class="absolute -top-10 right-0 text-white">Close ✕</button>
-                <iframe src="${embedUrl}" class="w-full h-full" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>
-            </div>`;
-        }
+        modal.innerHTML = `
+            <div class="relative w-full max-w-5xl bg-black rounded-2xl overflow-hidden shadow-2xl">
+                <button onclick="this.closest('.fixed').remove()" class="absolute top-4 right-4 text-white bg-black/50 w-10 h-10 rounded-full z-10">✕</button>
+                ${isVideo ? 
+                    `<video src="${v.url}" controls autoplay class="w-full"></video>` : 
+                    `<img src="${v.url}" class="w-full h-full">`
+                }
+                <div class="p-6 bg-white">
+                    <h2 class="text-2xl font-bold">${v.title}</h2>
+                </div>
+            </div>
+        `;
         document.body.appendChild(modal);
-    },
-
-    attachLoginListeners() {
-        document.getElementById('loginForm').onsubmit = e => {
-            e.preventDefault();
-            if (document.getElementById('adminPassword').value === 'ilovegoon') {
-                State.isAdmin = true;
-                State.currentView = 'admin';
-                UI.render();
-            } else {
-                alert('Wrong password');
-            }
-        };
-        document.getElementById('backToPublic').onclick = () => { State.currentView = 'public'; UI.render(); };
-    },
-
-    attachPublicListeners() {
-        document.getElementById('adminLoginBtn').onclick = () => { State.currentView = 'login'; UI.render(); };
-        document.getElementById('searchInput').oninput = e => { State.searchTerm = e.target.value; UI.render(); };
-        document.getElementById('categoryFilter').onchange = e => { State.selectedCategory = e.target.value; UI.render(); };
-    },
-
-    attachAdminListeners() {
-        document.getElementById('viewPublic').onclick = () => { State.currentView = 'public'; UI.render(); };
     }
 };
 
-// Start the app
+// Initialize App
 State.init();
 </script>
 </body>
